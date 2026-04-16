@@ -19,7 +19,7 @@ The AI agent landscape is fragmented. You have chat interfaces that can't write 
 ## Key Features
 
 ### Intent-Aware Routing
-Automatically routes tasks to specialized agent crews based on natural language intent. Ask "debug this function" and it routes to the coding crew. Ask "compare these frameworks" and it routes to research.
+Automatically routes tasks to specialized agent crews using **LLM-based semantic understanding**. The system analyzes the meaning of your request rather than just matching keywords, enabling accurate routing of complex or ambiguous tasks. Ask "debug this function" and it routes to the coding crew. Ask "compare these frameworks" and it routes to research.
 
 ### Persistent Memory
 Every interaction is stored in a vector database, enabling agents to learn from past context. Your coding agent remembers your preferences, your research agent builds on previous analysis.
@@ -331,12 +331,16 @@ curl http://localhost:11434/api/generate -d '{
 
 **Intent Classification:**
 
-| Intent | Keywords | Crew |
-|--------|----------|------|
-| coding | code, bug, function, script, refactor, debug, test | coding crew |
-| research | research, find, search, summarize, compare, explain | research crew |
-| ops | deploy, monitor, schedule, cron, email, calendar, automate | ops crew |
-| analysis | analyse, data, report, chart, metrics, kpi, dashboard | analysis crew |
+The orchestrator uses **LLM-based semantic routing** for intelligent task classification. It analyzes the meaning of your request rather than just matching keywords, enabling more accurate routing of complex or ambiguous tasks.
+
+| Intent | Description | Crew |
+|--------|-------------|------|
+| coding | Writing, debugging, refactoring, or testing code | coding crew |
+| research | Finding information, comparing options, explaining concepts | research crew |
+| ops | Deployment, automation, scheduling, file organization | ops crew |
+| analysis | Data analysis, reporting, metrics, dashboards | analysis crew |
+
+**Fallback:** If LLM classification fails, the system falls back to keyword matching to ensure reliability.
 
 **API Endpoints:**
 
@@ -348,6 +352,7 @@ curl http://localhost:8000/health
 curl http://localhost:8000/status
 
 # Run task (auto-routed by intent)
+# Memory is automatically retrieved and injected into the crew's context.
 curl -X POST http://localhost:8000/run \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Write a Python script to parse YAML files"}'
@@ -358,12 +363,22 @@ curl -X POST http://localhost:8000/run \
   -d '{"prompt": "Compare LangGraph vs CrewAI", "crew": "research"}'
 
 # Use Claude for reasoning (requires ANTHROPIC_API_KEY)
+# The crew will use Claude instead of the default Ollama model.
 curl -X POST http://localhost:8000/run \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Design a governance framework", "use_reasoning_llm": true}'
 
-# Search memory
-curl "http://localhost:8000/memory/search?query=YAML parsing&limit=5"
+# Search memory (with optional user_id for isolation)
+curl "http://localhost:8000/memory/search?query=YAML parsing&limit=5&user_id=alice"
+
+# Write to memory (for cross-agent coordination)
+# Used by OpenClaw, n8n, or external tools to contribute context.
+curl -X POST http://localhost:8000/memory \
+  -H "Content-Type: application/json" \
+  -d '{"content": "User prefers pytest over unittest", "user_id": "alice", "source": "openclaw"}'
+
+# Clear memory for a user
+curl -X DELETE "http://localhost:8000/memory?user_id=alice"
 ```
 
 **Crew Structure:**
@@ -405,22 +420,27 @@ def run(task: str, llm, context: dict) -> str:
 
 ---
 
-### Qdrant + Mem0: Vector Memory
+### Qdrant + Mem0: Shared Vector Memory
 
-**Purpose**: Persistent cross-session memory for context retention and retrieval.
+**Purpose**: Persistent cross-session memory shared across all agents (crews, OpenClaw, n8n).
 
 **How It Works:**
 
 1. **Storage**: Every task execution is automatically stored in Qdrant via Mem0
-   - Task description
-   - Result/output
-   - Metadata (crew, model, timestamp)
+   - Task description and result
+   - Metadata (crew, model, timestamp, source)
 
-2. **Embedding**: Uses `nomic-embed-text` model (274 MB) for vectorization
+2. **Embedding**: Uses `nomic-embed-text` model (274 MB) for vectorization. This model is pulled automatically at stack startup in both cloud and local mode.
 
-3. **Retrieval**: Semantic search finds relevant past context for new tasks
+3. **Retrieval**: Semantic search finds relevant past context for new tasks. Before each crew run, the orchestrator queries memory and injects results into the crew's `context["memories"]` and `context["memory_summary"]`.
+
+4. **Cross-agent coordination**: OpenClaw dual-writes to its local `MEMORY.md` and the shared store via `POST /memory`. n8n workflows can also read/write memory. Nightly sync ensures consistency.
+
+5. **User isolation**: Memory can be namespaced by `user_id` (defaults to `super-agent`). Pass `user_id` on `/run`, `/memory/search`, and `/memory` to separate contexts.
 
 **Configuration:** `./config/mem0-config.yaml`
+
+Note: `${ACTIVE_MODEL}` is expanded by the orchestrator at load time (not by Mem0 itself). The config file uses the placeholder; the orchestrator reads it, substitutes env vars, and passes the resolved config to Mem0.
 
 ```yaml
 vector_store:
@@ -519,15 +539,16 @@ OpenClaw can spawn OpenCode sessions via the ACP (Agent Communication Protocol) 
    - Routes messages to appropriate services
    - Manages agent sessions
 
-2. **Memory** (MEMORY.md)
-   - Long-term context storage
-   - Session state
-   - Auto-consolidation
+2. **Memory** (MEMORY.md + shared vector store)
+   - Local human-readable journal (`MEMORY.md`) for direct inspection
+   - Dual-writes to the shared Mem0/Qdrant store via `POST /memory`
+   - Nightly consolidation syncs local entries to the shared store
+   - Recall queries the shared store before answering
 
 3. **Personality** (SOUL.md, AGENTS.md)
    - Agent behavior definition
    - Routing rules
-   - Boundaries
+   - Memory coordination rules (recall before answering, dual-write after)
 
 **Configuration:** `./config/openclaw-config.yaml`
 

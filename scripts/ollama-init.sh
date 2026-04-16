@@ -29,3 +29,11 @@ else
     && echo "  Ollama OK." \
     || echo "  Warning: Ollama not reachable yet — services will retry."
 fi
+
+# Embedding model is required for Mem0 regardless of mode (cloud models can't embed).
+echo "  Ensuring embedding model nomic-embed-text is present..."
+curl -sf -X POST "$OLLAMA_HOST/api/pull" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "nomic-embed-text"}' \
+  | grep -E '"status"' | tail -2
+echo "  Done: nomic-embed-text"

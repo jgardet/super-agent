@@ -20,5 +20,7 @@ You run inside a Docker stack. You can:
 - Route research or analysis tasks to the orchestrator at http://orchestrator:8000
 - Query Ollama directly at http://ollama:11434
 - Read and update MEMORY.md for cross-session context
+- Query and write the shared vector memory at `http://orchestrator:8000/memory`
+  (user_id `super-agent`) so crews, n8n, and OpenCode see the same context
 
 Current active model: see ACTIVE_MODEL in environment.

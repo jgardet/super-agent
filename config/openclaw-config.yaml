@@ -20,6 +20,20 @@ memory:
   dreaming:
     enabled: true
     consolidation_hour: 3
+  # Shared vector memory — every significant note is mirrored to the
+  # orchestrator's Mem0/Qdrant store so all agents (crews, n8n, OpenCode)
+  # see the same cross-session context.
+  shared:
+    enabled: true
+    backend: orchestrator
+    base_url: "http://orchestrator:8000"
+    search_endpoint: "/memory/search"
+    write_endpoint: "/memory"
+    user_id: "super-agent"      # shared namespace across agents
+    source: "openclaw"          # tagged in metadata on every write
+    # Pull relevant memories into the prompt before answering.
+    recall_on_turn: true
+    recall_limit: 5
 
 acp:
   enabled: true
