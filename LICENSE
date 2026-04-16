@@ -1,0 +1,48 @@
+MIT License
+
+Copyright (c) 2026 [NYOORAN](https://www.nyooran.com/)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+Third-Party Components
+
+This project includes or uses the following third-party components, each
+licensed under their own terms:
+
+- Ollama (MIT License) - https://github.com/ollama/ollama
+- CrewAI (MIT License) - https://github.com/crewAIInc/crewAI
+- Qdrant (Apache License 2.0) - https://github.com/qdrant/qdrant
+- OpenCode (MIT License) - https://github.com/opencode-ai/opencode
+- OpenClaw (MIT License) - https://github.com/openclaw-ai/openclaw
+- n8n (Fair Code License) - https://github.com/n8n-io/n8n
+- Open-WebUI (MIT License) - https://github.com/open-webui/open-webui
+- Mem0 (Apache License 2.0) - https://github.com/mem0ai/mem0
+- FastAPI (MIT License) - https://github.com/tiangolo/fastapi
+- LangChain (MIT License) - https://github.com/langchain-ai/langchain
+
+The MIT License above applies only to the original code in this repository
+(Docker Compose configuration, crew definitions, integration scripts, and
+configuration files). Each third-party component is subject to its own
+license terms as specified in their respective repositories.
+
+IMPORTANT: The Fair Code License (n8n) has restrictions on commercial use.
+Please review the n8n license at https://github.com/n8n-io/n8n/blob/master/LICENSE.md
+before using this stack for commercial purposes.

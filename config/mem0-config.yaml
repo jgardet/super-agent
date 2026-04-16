@@ -1,0 +1,26 @@
+# Mem0 — cross-session vector memory
+# Qdrant runs as a sibling container: sa-qdrant
+
+vector_store:
+  provider: qdrant
+  config:
+    host: qdrant
+    port: 6333
+    collection_name: super_agent_memory
+    embedding_model_dims: 768    # nomic-embed-text output dims
+
+llm:
+  provider: ollama
+  config:
+    model: "${ACTIVE_MODEL}"
+    ollama_base_url: "http://ollama:11434"
+    temperature: 0.1
+    max_tokens: 2000
+
+embedder:
+  provider: ollama
+  config:
+    model: nomic-embed-text      # ~274 MB, pull handled by ollama-init.sh
+    ollama_base_url: "http://ollama:11434"
+
+history_db_path: /app/data/history.db

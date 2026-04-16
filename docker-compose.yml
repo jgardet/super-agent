@@ -1,0 +1,234 @@
+name: super-agent
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Super-Agent Stack
+# Components: Ollama · OpenCode · OpenClaw · CrewAI orchestrator · n8n · Qdrant
+# GPU: RTX 4080 12GB — switch with: ./scripts/switch-model.sh cloud|local
+#
+# Quick start (zero config needed for cloud mode):
+#   cp .env.example .env
+#   docker compose up -d
+#   open http://localhost:3000      # Open-WebUI (chat + model test)
+#   open http://localhost:5678      # n8n workflows  [admin / changeme]
+#   open http://localhost:8000/docs # Orchestrator API (Swagger)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── 1. OLLAMA — GPU-accelerated model server ──────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sa-ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_ORIGINS=*
+      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_MAX_LOADED_MODELS=1    # 12 GB VRAM: one model at a time
+      - OLLAMA_NUM_PARALLEL=2
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags > /dev/null"]
+      interval: 15s
+      timeout: 8s
+      retries: 8
+      start_period: 20s
+    networks: [agent-net]
+
+  # ── 2. OLLAMA INIT — pulls local model on first boot (skips in cloud mode) ─
+  ollama-init:
+    image: curlimages/curl:8
+    container_name: sa-ollama-init
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ./scripts/ollama-init.sh:/ollama-init.sh:ro
+    environment:
+      - MODEL_MODE=${MODEL_MODE:-cloud}
+      - LOCAL_MODEL=${LOCAL_MODEL:-glm-4.7-flash}
+      - CLOUD_MODEL=${CLOUD_MODEL:-glm-5.1:cloud}
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: ["/bin/sh", "/ollama-init.sh"]
+    networks: [agent-net]
+
+  # ── 3. OPENCODE — coding agent ────────────────────────────────────────────
+  #    Access via:  docker exec -it sa-opencode opencode
+  #    Or attach:   docker exec -it sa-opencode bash
+  opencode:
+    image: node:22-slim
+    container_name: sa-opencode
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+    working_dir: /workspace
+    volumes:
+      - workspace:/workspace
+      - ./config/opencode-config.json:/root/.config/opencode/config.json:ro
+      - ./config/CLAUDE.md:/workspace/CLAUDE.md:ro
+    environment:
+      - OPENCODE_MODEL=${ACTIVE_MODEL:-glm-5.1:cloud}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    command: >
+      sh -c "npm install -g opencode-ai@latest 2>&1 | tail -3 &&
+             echo '✓ OpenCode ready — docker exec -it sa-opencode opencode' &&
+             tail -f /dev/null"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks: [agent-net]
+
+  # ── 4. OPENCLAW — ops/memory agent daemon ────────────────────────────────
+  openclaw:
+    image: node:24-slim
+    container_name: sa-openclaw
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+    ports:
+      - "18789:18789"
+    volumes:
+      - openclaw_workspace:/root/.openclaw/workspace
+      - ./openclaw/SOUL.md:/root/.openclaw/workspace/SOUL.md:ro
+      - ./openclaw/AGENTS.md:/root/.openclaw/workspace/AGENTS.md:ro
+      - ./openclaw/HEARTBEAT.md:/root/.openclaw/workspace/HEARTBEAT.md:ro
+      - ./openclaw/MEMORY.md:/root/.openclaw/workspace/MEMORY.md
+      - ./config/openclaw-config.yaml:/root/.openclaw/config.yaml:ro
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - ACTIVE_MODEL=${ACTIVE_MODEL:-glm-5.1:cloud}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
+      - NODE_ENV=production
+    command: >
+      sh -c "npm install -g openclaw@latest 2>&1 | tail -3 &&
+             echo '✓ OpenClaw gateway on :18789' &&
+             openclaw gateway --port 18789"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks: [agent-net]
+
+  # ── 5. ORCHESTRATOR — CrewAI REST API + intent router ─────────────────────
+  orchestrator:
+    build:
+      context: ./orchestrator
+      dockerfile: Dockerfile
+    container_name: sa-orchestrator
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./crews:/app/crews        # hot-reload: drop new crew .py files here
+      - workspace:/workspace
+      - ./config/mem0-config.yaml:/app/mem0-config.yaml:ro
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - ACTIVE_MODEL=${ACTIVE_MODEL:-glm-5.1:cloud}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - MODEL_MODE=${MODEL_MODE:-cloud}
+      - QDRANT_HOST=http://qdrant:6333
+    depends_on:
+      ollama:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks: [agent-net]
+
+  # ── 6. QDRANT — vector store for cross-session memory (Mem0 backend) ──────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: sa-qdrant
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/readyz > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [agent-net]
+
+  # ── 7. N8N — visual workflow / no-code glue ───────────────────────────────
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: sa-n8n
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    environment:
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-changeme}
+      - WEBHOOK_URL=http://localhost:5678
+      - OLLAMA_URL=http://ollama:11434
+      - ORCHESTRATOR_URL=http://orchestrator:8000
+      - N8N_RUNNERS_ENABLED=true
+    networks: [agent-net]
+
+  # ── 8. OPEN-WEBUI — browser UI (chat, model selector, playground) ─────────
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: sa-webui
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+    ports:
+      - "3000:8080"
+    volumes:
+      - webui_data:/app/backend/data
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - WEBUI_AUTH=false           # set to true if exposing beyond localhost
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks: [agent-net]
+
+volumes:
+  ollama_data:
+  openclaw_workspace:
+  qdrant_data:
+  n8n_data:
+  webui_data:
+  workspace:
+
+networks:
+  agent-net:
+    driver: bridge

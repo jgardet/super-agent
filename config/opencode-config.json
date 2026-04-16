@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.schema.json",
+  "model": "glm-5.1:cloud",
+  "provider": {
+    "ollama": {
+      "baseUrl": "http://ollama:11434"
+    }
+  },
+  "autoshare": false,
+  "experimental": {
+    "multifile": true
+  }
+}
