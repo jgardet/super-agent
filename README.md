@@ -335,10 +335,15 @@ The orchestrator uses **LLM-based semantic routing** for intelligent task classi
 
 | Intent | Description | Crew |
 |--------|-------------|------|
+| planner | Multi-step goals requiring decomposition, strategy, roadmaps, or end-to-end workflows | planner crew |
 | coding | Writing, debugging, refactoring, or testing code | coding crew |
 | research | Finding information, comparing options, explaining concepts | research crew |
 | ops | Deployment, automation, scheduling, file organization | ops crew |
 | analysis | Data analysis, reporting, metrics, dashboards | analysis crew |
+
+**Planner Meta-Crew:**
+
+The planner crew takes high-level goals and breaks them into an ordered DAG of up to 6 subtasks, dispatches each to a specialist crew, then synthesises all outputs into a single executive-quality response. Use it for complex, multi-step requests like "prepare a roadmap to add Redis-backed job persistence" or "end-to-end plan to migrate the stack to Kubernetes." It can also be invoked automatically by keywords like "plan", "roadmap", "strategy", "end-to-end".
 
 **Fallback:** If LLM classification fails, the system falls back to keyword matching to ensure reliability.
 
@@ -348,22 +353,34 @@ The orchestrator uses **LLM-based semantic routing** for intelligent task classi
 # Health check
 curl http://localhost:8000/health
 
-# Status (shows available crews, model, memory status)
+# Status (shows available crews, model, memory, Tavily, workers)
 curl http://localhost:8000/status
 
-# Run task (auto-routed by intent)
+# Run task (auto-routed by intent, returns job_id immediately)
 # Memory is automatically retrieved and injected into the crew's context.
 curl -X POST http://localhost:8000/run \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Write a Python script to parse YAML files"}'
 
+# Poll job for result (async mode)
+curl http://localhost:8000/jobs/{job_id}
+
+# List recent jobs
+curl http://localhost:8000/jobs?limit=20
+
+# Run task synchronously (wait up to 120s for result)
+# Use for OpenClaw, n8n webhooks, or any caller that needs an inline answer.
+curl -X POST http://localhost:8000/run \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Compare LangGraph vs CrewAI", "crew": "research", "sync": true}'
+
 # Force specific crew
 curl -X POST http://localhost:8000/run \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "Compare LangGraph vs CrewAI", "crew": "research"}'
+  -d '{"prompt": "Design a governance framework", "crew": "planner", "user_id": "alice"}'
 
 # Use Claude for reasoning (requires ANTHROPIC_API_KEY)
-# The crew will use Claude instead of the default Ollama model.
+# The crew (and any recursive planner sub-steps) will use Claude.
 curl -X POST http://localhost:8000/run \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Design a governance framework", "use_reasoning_llm": true}'
@@ -380,6 +397,10 @@ curl -X POST http://localhost:8000/memory \
 # Clear memory for a user
 curl -X DELETE "http://localhost:8000/memory?user_id=alice"
 ```
+
+**Web Search:**
+
+The research crew has live internet access when `TAVILY_API_KEY` is set in `.env`. Get a free key at [tavily.com](https://tavily.com) (1000 searches/month). Check `GET /status` → `"tavily_search": true` to confirm it is wired.
 
 **Crew Structure:**
 

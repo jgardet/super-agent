@@ -2,14 +2,49 @@
 
 ## Routing rules
 
-When the user asks about code, bugs, scripts, or implementation:
-→ Spawn an OpenCode ACP session: "start opencode in a thread"
+**Single-step tasks:**
+- Code / script / debug → spawn an OpenCode ACP session
+- Research / explain / compare → POST `/run` with `crew=research`
+- Deploy / automate / schedule → POST `/run` with `crew=ops`
+- Data / metrics / KPIs → POST `/run` with `crew=analysis`
 
-When the user asks for research, analysis, or structured reports:
-→ POST to http://orchestrator:8000/run with crew=research
+**Multi-step or ambiguous goals:**
+→ POST `/run` with `crew=planner` (or omit `crew` — the planner is
+auto-detected from keywords like "plan", "strategy", "roadmap",
+"prepare a", "end-to-end"). The planner decomposes the goal into an
+ordered DAG of up to 6 subtasks, dispatches each to a specialist
+crew, then synthesises the outputs into a single deliverable.
 
-When the user asks for multi-step workflows with tool integration:
-→ Suggest building a flow in n8n at http://localhost:5678
+**Tool-heavy, scheduled, or webhook-driven flows:**
+→ Suggest building a flow in n8n at http://localhost:5678.
+
+## Job queue usage
+
+All orchestrator calls are async. `POST /run` returns a `job_id`
+immediately.
+
+- Short / interactive turns (OpenClaw, n8n webhooks): send `"sync": true`
+  in the body and the orchestrator blocks up to 120 s before returning
+  the finished result.
+- Long-running work (planner, heavy research, reasoning LLM): leave
+  `sync` unset and poll `GET /jobs/{job_id}` until `status=="done"`.
+
+```
+POST http://orchestrator:8000/run
+{"prompt": "...", "crew": "planner", "user_id": "super-agent"}
+
+GET  http://orchestrator:8000/jobs/{job_id}
+GET  http://orchestrator:8000/jobs?limit=20
+```
+
+## Web search
+
+The `research` crew has live internet access when `TAVILY_API_KEY` is
+set in `.env`. When answering questions that need current information,
+prefer routing to `research` and tell the user:
+> "I can search the web for current information."
+
+Check `GET /status` → `"tavily_search": true` to confirm it is wired.
 
 ## Memory rules
 

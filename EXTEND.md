@@ -4,6 +4,47 @@ The Super-Agent Stack is designed to be modular and extensible. This document co
 
 ---
 
+## 0. Use the Planner Meta-Crew
+
+The planner crew (`crews/planner.py`) is a meta-orchestrator that decomposes high-level goals into sequenced subtasks, dispatches each to a specialist crew, then synthesises all outputs into a unified deliverable.
+
+### When to Use the Planner
+
+- **Multi-step goals**: "Prepare a roadmap to add Redis-backed job persistence"
+- **Strategy and planning**: "End-to-end plan to migrate the stack to Kubernetes"
+- **Ambiguous requests**: The planner can decompose unclear requests into concrete subtasks
+- **Cross-domain workflows**: Tasks that span coding, research, ops, and analysis
+
+### How It Works
+
+1. **Decomposition**: The planner uses the LLM to break the goal into an ordered DAG of up to 6 subtasks, each assigned to a specialist crew (coding, research, ops, analysis).
+2. **Execution**: Subtasks execute sequentially, with context hand-off between steps (outputs of earlier steps are passed as context to dependent steps).
+3. **Synthesis**: All step outputs are combined by an executive advisor agent into a single, coherent response.
+
+### Usage
+
+```bash
+# Auto-detected by keywords (plan, roadmap, strategy, end-to-end)
+curl -X POST http://localhost:8000/run \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Prepare a roadmap to add Redis-backed job persistence"}'
+
+# Explicitly invoke the planner
+curl -X POST http://localhost:8000/run \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Design a governance framework", "crew": "planner"}'
+```
+
+### Customizing the Planner
+
+Edit `crews/planner.py` to:
+- Adjust the maximum number of steps (currently 6)
+- Add new crew types to the `VALID_CREWS` list
+- Modify the decomposition prompt to change how goals are broken down
+- Change the synthesizer's tone or output format
+
+---
+
 ## 1. Add Custom Crews
 
 Create specialized agent crews for specific tasks. Each crew is a Python file in `./crews/` with a standard interface.
@@ -76,7 +117,103 @@ def run(task: str, llm, context: dict) -> str:
 
 ---
 
-## 2. Build n8n Workflows
+## 2. Use the Async Job Queue
+
+The orchestrator runs all crew tasks in a background thread pool (`ThreadPoolExecutor`, default 4 workers, configurable via `ORCHESTRATOR_WORKERS`). This allows long-running tasks (planner, heavy research, reasoning LLM) to run without blocking.
+
+### Async vs Sync Mode
+
+**Async mode** (default): Submit a task and get a `job_id` immediately. Poll for the result.
+
+```bash
+# Submit task
+curl -X POST http://localhost:8000/run \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Prepare a roadmap to add Redis-backed job persistence"}'
+# Response: {"job_id": "...", "status": "queued", ...}
+
+# Poll for result
+curl http://localhost:8000/jobs/{job_id}
+# Response: {"job_id": "...", "status": "done", "result": "...", ...}
+```
+
+**Sync mode** (for OpenClaw, n8n webhooks, or any caller that needs an inline answer): Set `"sync": true` and the orchestrator blocks up to `ORCHESTRATOR_SYNC_TIMEOUT` seconds (default 120) before returning.
+
+```bash
+curl -X POST http://localhost:8000/run \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Summarise CrewAI vs LangGraph", "crew": "research", "sync": true}'
+# Response: {"job_id": "...", "status": "done", "result": "...", ...}
+```
+
+### Job Management Endpoints
+
+```bash
+# Get job status and result
+GET /jobs/{job_id}
+
+# List recent jobs (newest first, capped at limit)
+GET /jobs?limit=20
+
+# Delete a finished job from memory
+DELETE /jobs/{job_id}
+```
+
+### Scaling the Job Queue
+
+- Increase workers: Set `ORCHESTRATOR_WORKERS=8` in `.env` (or higher if you have CPU headroom).
+- For multi-replica setups, swap the in-memory `_jobs` dict for Redis (add a Redis service to docker-compose.yml and update `orchestrator/main.py` to use it).
+
+---
+
+## 3. Enable Web Search with Tavily
+
+The research crew can perform live web searches when `TAVILY_API_KEY` is configured. This allows agents to answer questions requiring current information, news, or real-time data.
+
+### Setup
+
+1. Get a free API key at [tavily.com](https://tavily.com) (1000 searches/month on the free tier).
+2. Add to `.env`:
+```bash
+TAVILY_API_KEY=your_tavily_key_here
+```
+3. Restart the orchestrator:
+```bash
+docker compose restart orchestrator
+```
+
+### Verification
+
+Check that web search is wired:
+```bash
+curl http://localhost:8000/status
+# Expect: "tavily_search": true
+```
+
+### Usage
+
+The research crew automatically uses web search when the task requires current information. No additional parameters needed—just route to the research crew:
+
+```bash
+curl -X POST http://localhost:8000/run \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "What are the latest developments in CrewAI?", "crew": "research"}'
+```
+
+### Customizing Web Search
+
+Edit `crews/research.py` to:
+- Attach the `crewai_tools.TavilySearchTool` to the researcher agent (currently the crew expects the tool to be available via environment).
+- Adjust search parameters (max results, search depth, include images, etc.).
+- Combine web search results with the agent's knowledge base.
+
+### Rate Limits
+
+The free Tavily tier allows 1000 searches/month. Monitor usage via the Tavily dashboard. For higher volume, upgrade to a paid plan or implement caching in your workflows (e.g., store frequently-searched topics in memory).
+
+---
+
+## 4. Build n8n Workflows
 
 Create visual automation workflows using n8n's drag-and-drop interface.
 
@@ -118,7 +255,7 @@ Export workflows and share them via GitHub issues or the community for others to
 
 ---
 
-## 3. Add Messaging Channels
+## 5. Add Messaging Channels
 
 Configure OpenClaw to support additional messaging platforms.
 
@@ -166,7 +303,7 @@ channels:
 
 ---
 
-## 4. Add New Services
+## 6. Add New Services
 
 Integrate additional services into the Docker Compose stack.
 
@@ -205,7 +342,7 @@ services:
 
 ---
 
-## 5. Add Custom LLM Models
+## 7. Add Custom LLM Models
 
 Add new models to Ollama for specialized tasks.
 
@@ -253,7 +390,7 @@ Or for Windows:
 
 ---
 
-## 6. Configure Memory Patterns
+## 8. Configure Memory Patterns
 
 Customize how Mem0 stores and retrieves context.
 
@@ -305,7 +442,7 @@ curl "http://localhost:8000/memory/search?query=your search term&limit=5"
 
 ---
 
-## 7. Create OpenClaw Agents
+## 9. Create OpenClaw Agents
 
 Build custom agents that communicate via the ACP (Agent Communication Protocol).
 
@@ -356,7 +493,7 @@ Agents communicate via WebSocket on port 18789. The ACP protocol defines:
 
 ---
 
-## 8. Add API Integrations
+## 9. Add API Integrations
 
 Extend the orchestrator with custom API endpoints.
 
@@ -397,7 +534,7 @@ docker compose up -d orchestrator
 
 ---
 
-## 9. Modify Crew Behavior
+## 11. Modify Crew Behavior
 
 Enhance existing crews with additional agents or tasks.
 
@@ -485,7 +622,7 @@ def run(task: str, llm, context: dict) -> str:
 
 ---
 
-## Extension Guidelines
+## 12. Extension Guidelines
 
 ### Best Practices
 
