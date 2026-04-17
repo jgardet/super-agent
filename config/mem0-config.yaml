@@ -13,7 +13,7 @@ llm:
   provider: ollama
   config:
     # Mem0 uses this model for memory extraction/consolidation. Cloud-proxied
-    # models (e.g. glm-5.1:cloud) work here too since Ollama exposes them
+    # models (e.g. minimax-m2.7:cloud, glm-5.1:cloud) work here too since Ollama exposes them
     # through the same API. ${ACTIVE_MODEL} is expanded by the orchestrator
     # at load time (see _expand_env in main.py).
     model: "${ACTIVE_MODEL}"

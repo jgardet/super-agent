@@ -247,7 +247,7 @@ Slack notification
 - **Orchestrator Node**: HTTP Request to `http://orchestrator:8000/run`
 - **Ollama Node**: HTTP Request to `http://ollama:11434/api/generate`
 - **Memory Node**: HTTP Request to `http://orchestrator:8000/memory/search`
-- **OpenCode Agent**: Via ACP through OpenClaw
+- **OpenCode (coding) Agent**: via the orchestrator — HTTP Request to `http://orchestrator:8000/run` with `{"crew": "coding", "prompt": "..."}` (delegates to OpenCode through its internal shim)
 
 ### Sharing Workflows
 
@@ -445,6 +445,8 @@ curl "http://localhost:8000/memory/search?query=your search term&limit=5"
 ## 9. Create OpenClaw Agents
 
 Build custom agents that communicate via the ACP (Agent Communication Protocol).
+
+> **Note:** ACP is not yet wired end-to-end in this stack. The sections below describe the intended design. The currently working path for coding tasks is `POST /run` with `crew=coding` on the orchestrator, which delegates to OpenCode through an internal HTTP shim (see `crews/coding.py` and `opencode/shim.mjs`).
 
 ### Agent Template
 

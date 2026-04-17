@@ -7,7 +7,7 @@ The AI agent landscape is fragmented. You have chat interfaces that can't write 
 **Super-Agent Stack unifies these capabilities into a cohesive, self-hosted platform:**
 
 - **Privacy First**: Your data never leaves your hardware when running local models
-- **Flexible Inference**: Switch between cloud (GLM-5.1) for capability and local (glm-4.7-flash) for privacy
+- **Flexible Inference**: Switch between cloud (Ollama-Cloud models) for capability and local GPU models for privacy
 - **Multi-Agent Orchestration**: Specialized crews for coding, research, operations, and analysis
 - **Persistent Memory**: Cross-session learning via vector database
 - **Visual Automation**: Build complex workflows with n8n's drag-and-drop interface
@@ -25,7 +25,7 @@ Automatically routes tasks to specialized agent crews using **LLM-based semantic
 Every interaction is stored in a vector database, enabling agents to learn from past context. Your coding agent remembers your preferences, your research agent builds on previous analysis.
 
 ### Flexible Model Switching
-Toggle between cloud (GLM-5.1, free, zero VRAM) and local (glm-4.7-flash, RTX 4080) inference with one command. Use cloud for maximum capability, local for privacy and speed.
+Toggle between cloud (Ollama-Cloud, zero VRAM) and local (any model that fits your GPU) inference with one command. Use cloud for maximum capability, local for privacy and speed.
 
 ### Real File Operations
 The coding agent can actually read, edit, and create files in your workspace. Not just code generation—real file system operations with LLM guidance.
@@ -161,56 +161,73 @@ Future Tasks
 Enhanced context for new tasks
 ```
 
-### 3. Coding Flow: Orchestrator → OpenCode
+### 3. Coding Flow: Orchestrator → OpenCode (HTTP shim)
 
 ```
 User: "Refactor the authentication module"
     │
     ▼
-Orchestrator (coding crew)
+Orchestrator → coding crew (crews/coding.py)
     │
-    ├─→ Analyzes task
-    ├─→ Decides file operations needed
-    │
-    ▼
-OpenClaw (ACP Protocol)
-    │
-    ├─→ Spawns OpenCode session
-    ├─→ Mounts shared workspace volume
+    ├─→ POST http://opencode:8787/run  (HTTP shim inside sa-opencode)
+    │       (shim spawns: opencode run "<task>" in /workspace)
     │
     ▼
-OpenCode Container
-    │
-    ├─→ Reads files from /workspace
-    ├─→ Makes edits with LLM assistance
-    ├─→ Writes changes back to /workspace
+OpenCode container
+    ├─→ Reads/creates/edits files in /workspace (shared volume)
+    ├─→ Runs commands if needed (pytest, linters, etc.)
+    ├─→ Returns stdout / stderr / exit_code
     │
     ▼
-Result → Orchestrator → User
+CrewAI reviewer agent
+    ├─→ Summarises what changed, flags issues, confirms success
+    │
+    ▼
+Result + OpenCode transcript → Orchestrator → User
 ```
+
+The `/workspace` volume is mounted by both `sa-opencode` and `sa-orchestrator`,
+so files written by OpenCode are immediately visible everywhere.
 
 ### 4. Messaging Flow: OpenClaw Gateway
 
+OpenClaw runs on `ws://localhost:18789` with a pre-registered `coder` agent
+backed by Ollama (via the `ollama/` provider OpenClaw wires on first boot).
+The `coder` agent uses OpenClaw's built-in **coding-agent skill**: for any
+coding request, it spawns `opencode run` as a bash sub-process against
+`/workspace`, so file edits land on the same shared volume the orchestrator
+sees.
+
 ```
-Telegram/Slack/Discord
+Channel (Telegram / Slack / Discord)
     │
-    ├─→ User sends message
-    │
-    ▼
-OpenClaw Gateway (ws://18789)
-    │
-    ├─→ Receives message
-    ├─→ Classifies intent
+    ├─→ OpenClaw gateway :18789
     │
     ▼
-Routes:
-    ├─→ Simple query → Direct LLM response
-    ├─→ Coding task → Spawn OpenCode via ACP
-    ├─→ Research/Analysis → POST to Orchestrator
-    ├─→ Complex workflow → Suggest n8n
+Coder agent (Ollama brain via ollama/ provider)
+    │
+    ├─→ Intent classification
     │
     ▼
-Response → Messaging platform
+Coding-agent skill
+    │
+    ├─→ bash tool: opencode run "..."
+    │
+    ▼
+File operations
+    ├─→ /workspace (shared volume)
+    ├─→ Visible to orchestrator + OpenCode
+    │
+    ▼
+Response → Channel
+```
+
+The channel tokens in `.env` are optional — you can also hit the gateway
+directly, e.g.:
+
+```bash
+docker exec sa-openclaw openclaw agent --agent coder --local \
+    --message 'Create /workspace/hello.py with print("hi")' --json
 ```
 
 ### 5. Workflow Flow: n8n Integration
@@ -224,7 +241,6 @@ n8n Workflow
 Nodes:
     ├─→ HTTP Request → Orchestrator API
     ├─→ HTTP Request → Ollama API
-    ├─→ OpenCode Agent (via ACP)
     ├─→ Memory Search (Qdrant/Mem0)
     │
     ▼
@@ -290,10 +306,13 @@ First boot takes 2–4 minutes (image pulls). Services available at:
 **Purpose**: Serves LLM models, either as a cloud proxy or local GPU inference.
 
 **Models:**
-- `glm-5.1:cloud` - Default, free, zero VRAM (proxied to Z.ai)
-- `glm-4.7-flash` - Best local model for RTX 4080 (~8 GB VRAM)
-- `qwen3-coder:14b` - Heavy coding tasks (~9 GB VRAM)
-- `qwen3.5:9b` - Fastest local model (~6 GB VRAM)
+- `minimax-m2.7:cloud` — current default multi-purpose cloud model (free via Ollama-Cloud, zero VRAM)
+- `glm-5.1:cloud` — best open weight model for coding (free via Ollama-Cloud, zero VRAM)
+- `glm-4.7-flash` — solid local model (~8 GB VRAM, MoE 30B / 3B active)
+- `qwen3-coder:14b` — heavy coding tasks (~9 GB VRAM)
+- `qwen3.5:9b` — fast lower-VRAM option (~6 GB VRAM)
+
+VRAM figures are approximate — check against your own GPU before pulling.
 
 **Switching Models:**
 
@@ -318,7 +337,7 @@ curl http://localhost:11434/api/tags
 
 # Generate completion
 curl http://localhost:11434/api/generate -d '{
-  "model": "glm-5.1:cloud",
+  "model": "minimax-m2.7:cloud",
   "prompt": "Hello, world!"
 }'
 ```
@@ -530,22 +549,37 @@ The `./workspace/` directory is shared between:
 
 ```json
 {
-  "model": "glm-5.1:cloud",
+  "model": "ollama/minimax-m2.7:cloud",
   "provider": {
     "ollama": {
-      "baseUrl": "http://ollama:11434"
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://ollama:11434/v1" },
+      "models": {
+        "minimax-m2.7:cloud": {},
+        "glm-5.1:cloud": {}
+      }
     }
   },
-  "autoshare": false,
-  "experimental": {
-    "multifile": true
-  }
+  "autoshare": false
 }
 ```
 
-**ACP Integration:**
+**How the orchestrator uses OpenCode:**
 
-OpenClaw can spawn OpenCode sessions via the ACP (Agent Communication Protocol) for complex coding tasks.
+A small HTTP shim (`opencode/shim.mjs`, runs inside `sa-opencode` on port 8787)
+exposes `POST /run` and spawns `opencode run <prompt>` inside `/workspace`.
+The orchestrator's `coding` crew (`crews/coding.py`) calls this endpoint
+directly, so every `POST /run` with `crew=coding` (or `orchestrator-coding`
+from Open-WebUI) executes real file operations on disk. The shim is
+internal-only — not exposed to the host.
+
+**ACP (Agent Communication Protocol):**
+
+`opencode acp` (Zed-style JSON-RPC over stdio or a single-session TCP port)
+is not used by our internal flows — the coding crew uses the lighter HTTP
+shim and OpenClaw uses shell invocation. The ACP subcommand remains
+available inside `sa-opencode` if you want to drive OpenCode from an
+external ACP-aware client (Zed, etc.).
 
 ---
 
@@ -571,7 +605,42 @@ OpenClaw can spawn OpenCode sessions via the ACP (Agent Communication Protocol) 
    - Routing rules
    - Memory coordination rules (recall before answering, dual-write after)
 
-**Configuration:** `./config/openclaw-config.yaml`
+**Configuration:**
+
+The authoritative OpenClaw config is auto-generated inside the
+`openclaw_state` volume at `/root/.openclaw/openclaw.json` on first boot
+by `./openclaw/bootstrap.sh` — which replicates what `ollama launch
+openclaw` does interactively (wires Ollama as the model provider) but works
+in a headless container. `./config/openclaw-config.yaml` is kept as a
+human-readable cheat-sheet of the settings we care about; OpenClaw itself
+reads the JSON.
+
+Bootstrapped JSON (abridged):
+
+```json
+{
+  "gateway": { "mode": "local", "port": 18789, "bind": "loopback", "auth": { "mode": "token" } },
+  "models": {
+    "providers": {
+      "ollama": {
+        "baseUrl": "http://ollama:11434",
+        "models": [
+          { "id": "minimax-m2:cloud" },
+          { "id": "glm-5.1:cloud" },
+          { "id": "qwen3.5:9b" }
+        ]
+      }
+    }
+  },
+  "plugins": { "entries": { "ollama": { "enabled": true } } },
+  "agents": {
+    "defaults": { "model": { "primary": "ollama/minimax-m2:cloud" } },
+    "list": [ { "id": "main" }, { "id": "coder", "model": "ollama/minimax-m2:cloud", "workspace": "/root/.openclaw/agents/coder/workspace" } ]
+  }
+}
+```
+
+The reference cheat-sheet at `./config/openclaw-config.yaml`:
 
 ```yaml
 gateway:
@@ -642,7 +711,7 @@ docker compose restart openclaw
 - **Orchestrator Node**: HTTP Request to `http://orchestrator:8000/run`
 - **Ollama Node**: HTTP Request to `http://ollama:11434/api/generate`
 - **Memory Node**: HTTP Request to `http://orchestrator:8000/memory/search`
-- **OpenCode Agent**: Via ACP through OpenClaw
+- **OpenCode (coding) Agent**: HTTP Request to `http://orchestrator:8000/run` with `{"crew":"coding", ...}` — the orchestrator then delegates to OpenCode via its internal shim
 
 **Example Workflow:**
 
@@ -684,7 +753,39 @@ Notification (Email/Slack)
 
 **Configuration:**
 
-Connected to Ollama at `http://ollama:11434` automatically. Model selection happens in the UI.
+Open-WebUI is wired to **two** backends simultaneously:
+
+1. **Ollama** (`http://ollama:11434`) — raw model inference
+   - Local models you've pulled (e.g. `qwen3.5:9b`)
+   - Ollama-Cloud models (e.g. `minimax-m2.7:cloud`, `glm-5.1:cloud`) when signed into Ollama
+2. **Orchestrator** (`http://orchestrator:8000/v1`, OpenAI-compatible) — multi-agent crews
+   - `orchestrator-auto` — auto-route via `classify_task`
+   - `orchestrator-planner` — decompose multi-step goals
+   - `orchestrator-research` — find, compare, explain
+   - `orchestrator-coding` — write/debug/refactor
+   - `orchestrator-ops` — deployment, automation, file ops
+   - `orchestrator-analysis` — data analysis, metrics, reports
+
+The model dropdown in Open-WebUI shows all of them together; pick one per conversation.
+
+**When to pick what:**
+- *Direct Ollama model* — fast single-shot chat, prompt tuning, playground
+- *`orchestrator-auto`* — let the stack decide which crew handles the request
+- *`orchestrator-<crew>`* — force a specific crew (useful when auto-routing misclassifies)
+
+**Recommended local models for 8GB VRAM:**
+- `qwen3.5:9b` (~6GB) — fast, good for chat
+- `glm-4.7-flash` (~8GB) — best all-round, tight on 8GB
+
+**To pull a local model:**
+```bash
+docker exec sa-ollama ollama pull qwen3.5:9b
+```
+
+**To sign Ollama into Ollama Cloud** (enables `*:cloud` models):
+```bash
+docker exec -it sa-ollama ollama signin
+```
 
 ---
 
@@ -759,14 +860,14 @@ Best for: Recurring tasks, reports, maintenance.
 ### Pattern 5: Messaging-Triggered
 
 ```
-Telegram → OpenClaw → Intent classification
-                      ↓
-                  Routes to:
-                  - Orchestrator (research)
-                  - OpenCode (coding)
-                  - Direct LLM (simple)
-                      ↓
-                  Response → Telegram
+Telegram / Slack / Discord → OpenClaw gateway → Intent classification
+                                                    ↓
+                                            Routes to:
+                                            - `coder` agent (coding → spawns opencode run in /workspace)
+                                            - Orchestrator (research / ops / analysis via POST /run)
+                                            - Direct LLM turn (simple Q&A)
+                                                    ↓
+                                            Response → channel
 ```
 
 Best for: Remote access, team collaboration, alerts.
@@ -780,9 +881,9 @@ Best for: Remote access, team collaboration, alerts.
 ```bash
 # Model Mode
 MODEL_MODE=cloud                    # cloud or local
-CLOUD_MODEL=glm-5.1:cloud
-LOCAL_MODEL=glm-4.7-flash
-ACTIVE_MODEL=glm-5.1:cloud         # Auto-managed by switch-model script
+CLOUD_MODEL=minimax-m2.7:cloud     # Target: glm-5.1:cloud when available
+LOCAL_MODEL=glm-4.7-flash          # Any model that fits your GPU
+ACTIVE_MODEL=minimax-m2.7:cloud    # Auto-managed by switch-model script
 
 # API Keys (Optional)
 ANTHROPIC_API_KEY=                 # For Claude reasoning
@@ -802,7 +903,7 @@ DISCORD_BOT_TOKEN=
 
 - **Orchestrator**: `./orchestrator/main.py`
 - **OpenCode**: `./config/opencode-config.json`
-- **OpenClaw**: `./config/openclaw-config.yaml`
+- **OpenClaw**: `./openclaw/bootstrap.sh` (first-boot seed for `~/.openclaw/openclaw.json`) — `./config/openclaw-config.yaml` is a cheat-sheet reference only
 - **Mem0**: `./config/mem0-config.yaml`
 
 ### Volumes
@@ -810,7 +911,7 @@ DISCORD_BOT_TOKEN=
 | Volume | Purpose | Location |
 |--------|---------|----------|
 | ollama_data | Downloaded model weights | Docker volume |
-| openclaw_workspace | OpenClaw memory and state | Docker volume |
+| openclaw_state | OpenClaw state (gateway token, agents, sessions) | Docker volume |
 | qdrant_data | Vector database | Docker volume |
 | n8n_data | Workflow definitions | Docker volume |
 | webui_data | Open-WebUI settings | Docker volume |

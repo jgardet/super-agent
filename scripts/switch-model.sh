@@ -1,11 +1,11 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# switch-model.sh  —  toggle between GLM-5.1:cloud and local RTX 4080 inference
+# switch-model.sh  —  toggle between Ollama-cloud and local GPU inference
 #
 # Usage:
 #   ./scripts/switch-model.sh                     → show current config
-#   ./scripts/switch-model.sh cloud               → GLM-5.1:cloud (default)
-#   ./scripts/switch-model.sh local               → glm-4.7-flash (RTX 4080)
+#   ./scripts/switch-model.sh cloud               → minimax-m2.7:cloud (default)
+#   ./scripts/switch-model.sh local               → LOCAL_MODEL from .env
 #   ./scripts/switch-model.sh local qwen3.5:9b    → local with override model
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -40,10 +40,10 @@ echo "────────────────────────�
 
 # ── Cloud mode ────────────────────────────────────────────────────────────────
 if [ "$MODE" = "cloud" ]; then
-  ACTIVE_MODEL="glm-5.1:cloud"
+  ACTIVE_MODEL="${OVERRIDE_MODEL:-minimax-m2.7:cloud}"
   echo -e "  Mode:  ${GREEN}cloud${NC}"
   echo -e "  Model: ${GREEN}$ACTIVE_MODEL${NC}"
-  echo -e "  VRAM:  ${GREEN}0 GB${NC} (proxied by Ollama → Z.ai)"
+  echo -e "  VRAM:  ${GREEN}0 GB${NC} (proxied via Ollama cloud)"
 
 # ── Local mode ────────────────────────────────────────────────────────────────
 elif [ "$MODE" = "local" ]; then
@@ -54,17 +54,17 @@ elif [ "$MODE" = "local" ]; then
     LOCAL_MODEL="${LOCAL_MODEL:-glm-4.7-flash}"
   fi
   ACTIVE_MODEL="$LOCAL_MODEL"
-  echo -e "  Mode:  ${YELLOW}local${NC} (RTX 4080 12 GB)"
+  echo -e "  Mode:  ${YELLOW}local${NC} (uses your GPU)"
   echo -e "  Model: ${YELLOW}$LOCAL_MODEL${NC}"
 
-  # VRAM guidance
+  # Approximate VRAM guidance — verify against your own GPU before pulling
   case "$LOCAL_MODEL" in
-    glm-4.7-flash)    echo -e "  VRAM:  ${GREEN}~8 GB  (MoE 30B / 3B active) ✓ comfortable${NC}" ;;
-    qwen3-coder:14b)  echo -e "  VRAM:  ${GREEN}~9 GB  (14B dense)           ✓ fits${NC}" ;;
-    qwen3.5:9b)       echo -e "  VRAM:  ${GREEN}~6 GB  (9B dense)            ✓ headroom${NC}" ;;
-    qwen3.5:27b)      echo -e "  VRAM:  ${RED}~17 GB (27B dense)           ✗ exceeds 12 GB${NC}"; exit 1 ;;
-    glm-5.1|glm-5.1:latest) echo -e "  VRAM:  ${RED}~400+ GB (754B MoE)        ✗ not runnable locally${NC}"; exit 1 ;;
-    *)                echo -e "  VRAM:  ${YELLOW}unknown — check ollama.com/library/$LOCAL_MODEL${NC}" ;;
+    glm-4.7-flash)          echo -e "  VRAM:  ${GREEN}~8 GB  (MoE 30B / 3B active)${NC}" ;;
+    qwen3-coder:14b)        echo -e "  VRAM:  ${GREEN}~9 GB  (14B dense)${NC}" ;;
+    qwen3.5:9b)             echo -e "  VRAM:  ${GREEN}~6 GB  (9B dense)${NC}" ;;
+    qwen3.5:27b)            echo -e "  VRAM:  ${YELLOW}~17 GB (27B dense) — needs a large GPU${NC}" ;;
+    glm-5.1|glm-5.1:latest) echo -e "  VRAM:  ${RED}~400+ GB (754B MoE) — not runnable locally${NC}"; exit 1 ;;
+    *)                      echo -e "  VRAM:  ${YELLOW}unknown — check ollama.com/library/$LOCAL_MODEL${NC}" ;;
   esac
 
   # Pull model if not already present

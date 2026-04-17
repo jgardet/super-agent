@@ -32,7 +32,7 @@ import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from langchain_ollama import OllamaLLM
+from crewai import LLM
 
 # Mem0 for cross-session memory
 try:
@@ -43,12 +43,10 @@ except ImportError:
 
 # Optional: Claude as reasoning fallback
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-if ANTHROPIC_KEY:
-    from langchain_anthropic import ChatAnthropic
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-ACTIVE_MODEL    = os.getenv("ACTIVE_MODEL", "glm-5.1:cloud")
+ACTIVE_MODEL    = os.getenv("ACTIVE_MODEL", "minimax-m2.7:cloud")
 MODEL_MODE      = os.getenv("MODEL_MODE", "cloud")
 QDRANT_HOST     = os.getenv("QDRANT_HOST", "http://qdrant:6333")
 TAVILY_KEY      = os.getenv("TAVILY_API_KEY", "")
@@ -145,19 +143,27 @@ app.add_middleware(
 )
 
 # ── LLM factory ────────────────────────────────────────────────────────────────
-def get_llm(temperature: float = 0.1) -> OllamaLLM:
-    return OllamaLLM(
-        model=ACTIVE_MODEL,
-        base_url=OLLAMA_BASE_URL,
+def get_llm(temperature: float = 0.1):
+    """Return CrewAI 1.14+ LLM pointed at Ollama's OpenAI-compatible endpoint.
+
+    CrewAI 1.14 routes `ollama/*` through its native OpenAI provider, which
+    ignores a custom `api_base` in some code paths. We instead use the
+    `openai/` provider explicitly against Ollama's /v1 endpoint, which works
+    reliably for both local and Ollama-Cloud (e.g. `*:cloud`) models.
+    """
+    return LLM(
+        model=f"openai/{ACTIVE_MODEL}",
+        api_base=f"{OLLAMA_BASE_URL.rstrip('/')}/v1",
+        api_key="ollama",  # dummy; Ollama doesn't require auth
         temperature=temperature,
     )
 
 def get_reasoning_llm():
     """Uses Claude if API key present; falls back to Ollama."""
     if ANTHROPIC_KEY:
-        return ChatAnthropic(
-            model="claude-sonnet-4-6",
-            anthropic_api_key=ANTHROPIC_KEY,
+        return LLM(
+            model="anthropic/claude-sonnet-4-6",
+            api_key=ANTHROPIC_KEY,
             temperature=0.1,
         )
     return get_llm()
@@ -519,3 +525,113 @@ def reset_memory(user_id: Optional[str] = None):
         return {"status": "cleared", "user_id": uid}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+# ── OpenAI-compatible API (for Open-WebUI and other OpenAI clients) ───────────
+# Exposes the orchestrator's crews as virtual "models". Open-WebUI can then be
+# configured with this service as an additional OpenAI connection, letting the
+# user pick between raw Ollama models and orchestrator-routed crews.
+
+VIRTUAL_MODELS = {
+    "orchestrator-auto":     "auto-route via classify_task (planner/research/coding/ops/analysis)",
+    "orchestrator-planner":  "planner crew: decompose + delegate multi-step goals",
+    "orchestrator-research": "research crew: find, compare, explain",
+    "orchestrator-coding":   "coding crew: write/debug/refactor code",
+    "orchestrator-ops":      "ops crew: deployment, automation, file ops",
+    "orchestrator-analysis": "analysis crew: data analysis, metrics, reports",
+}
+
+@app.get("/v1/models", tags=["openai"])
+def openai_list_models():
+    """OpenAI-compatible model list. Exposed at /v1/models for Open-WebUI."""
+    now = int(time.time())
+    data = [
+        {"id": mid, "object": "model", "created": now, "owned_by": "super-agent",
+         "description": desc}
+        for mid, desc in VIRTUAL_MODELS.items()
+    ]
+    return {"object": "list", "data": data}
+
+class _OAIMessage(BaseModel):
+    role: str
+    content: Any  # string or list of content parts
+
+class OpenAIChatRequest(BaseModel):
+    model: str
+    messages: list[_OAIMessage]
+    stream: Optional[bool] = False
+    user: Optional[str] = None
+    # Extra fields tolerated and ignored (temperature, top_p, etc.)
+    class Config:
+        extra = "allow"
+
+def _extract_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, dict):
+                parts.append(p.get("text") or p.get("content") or "")
+            else:
+                parts.append(str(p))
+        return "\n".join(filter(None, parts))
+    return str(content)
+
+def _resolve_crew(model_id: str) -> Optional[str]:
+    """Map virtual model name to a crew name, or None for auto-routing."""
+    m = model_id.lower().strip()
+    if m in ("orchestrator-auto", "auto"):
+        return None
+    if m.startswith("orchestrator-"):
+        return m.split("-", 1)[1]
+    return m  # allow bare "planner", "research", ...
+
+@app.post("/v1/chat/completions", tags=["openai"])
+def openai_chat_completions(req: OpenAIChatRequest):
+    """OpenAI-compatible chat completions. Synchronous (non-streaming)."""
+    if not req.messages:
+        raise HTTPException(status_code=400, detail="messages is required")
+
+    # Flatten prompt: system messages become prefix context, last user msg is task.
+    system_parts = [_extract_text(m.content) for m in req.messages if m.role == "system"]
+    user_parts   = [_extract_text(m.content) for m in req.messages if m.role == "user"]
+    asst_parts   = [_extract_text(m.content) for m in req.messages if m.role == "assistant"]
+
+    if not user_parts:
+        raise HTTPException(status_code=400, detail="at least one user message required")
+
+    prompt = user_parts[-1]
+    context: dict[str, Any] = {}
+    if system_parts:
+        context["system"] = "\n\n".join(system_parts)
+    # Include recent history (excluding last user msg) for continuity.
+    history_msgs = req.messages[:-1] if req.messages[-1].role == "user" else req.messages
+    if len(history_msgs) > 1:
+        context["history"] = [
+            {"role": m.role, "content": _extract_text(m.content)}
+            for m in history_msgs if m.role in ("user", "assistant")
+        ]
+
+    crew_name = _resolve_crew(req.model) or classify_task(prompt)
+    user_id = req.user or DEFAULT_USER_ID
+
+    try:
+        result = run_crew_by_name(crew_name, prompt, context)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"crew '{crew_name}' failed: {exc}")
+
+    now = int(time.time())
+    text = str(result)
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+        "object": "chat.completion",
+        "created": now,
+        "model": req.model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "x_super_agent": {"crew_used": crew_name, "user_id": user_id},
+    }

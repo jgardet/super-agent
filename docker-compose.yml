@@ -3,7 +3,8 @@ name: super-agent
 # ─────────────────────────────────────────────────────────────────────────────
 # Super-Agent Stack
 # Components: Ollama · OpenCode · OpenClaw · CrewAI orchestrator · n8n · Qdrant
-# GPU: RTX 4080 12GB — switch with: ./scripts/switch-model.sh cloud|local
+# GPU: any NVIDIA GPU (falls back to Ollama cloud if none). Switch with:
+#   ./scripts/switch-model.sh cloud|local
 #
 # Quick start (zero config needed for cloud mode):
 #   cp .env.example .env
@@ -37,10 +38,10 @@ services:
     environment:
       - OLLAMA_ORIGINS=*
       - OLLAMA_KEEP_ALIVE=24h
-      - OLLAMA_MAX_LOADED_MODELS=1    # 12 GB VRAM: one model at a time
+      - OLLAMA_MAX_LOADED_MODELS=1    # load one model at a time (safe for small-to-mid GPUs)
       - OLLAMA_NUM_PARALLEL=2
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags > /dev/null"]
+      test: ["CMD-SHELL", "ollama list || exit 1"]
       interval: 15s
       timeout: 8s
       retries: 8
@@ -49,7 +50,7 @@ services:
 
   # ── 2. OLLAMA INIT — pulls local model on first boot (skips in cloud mode) ─
   ollama-init:
-    image: curlimages/curl:8
+    image: curlimages/curl:latest
     container_name: sa-ollama-init
     restart: "no"
     depends_on:
@@ -60,7 +61,7 @@ services:
     environment:
       - MODEL_MODE=${MODEL_MODE:-cloud}
       - LOCAL_MODEL=${LOCAL_MODEL:-glm-4.7-flash}
-      - CLOUD_MODEL=${CLOUD_MODEL:-glm-5.1:cloud}
+      - CLOUD_MODEL=${CLOUD_MODEL:-minimax-m2.7:cloud}
       - OLLAMA_HOST=http://ollama:11434
     entrypoint: ["/bin/sh", "/ollama-init.sh"]
     networks: [agent-net]
@@ -80,13 +81,19 @@ services:
       - workspace:/workspace
       - ./config/opencode-config.json:/root/.config/opencode/config.json:ro
       - ./config/CLAUDE.md:/workspace/CLAUDE.md:ro
+      - ./opencode/shim.mjs:/opt/shim.mjs:ro
+    expose:
+      - "8787"
     environment:
-      - OPENCODE_MODEL=${ACTIVE_MODEL:-glm-5.1:cloud}
+      - OPENCODE_MODEL=${ACTIVE_MODEL:-minimax-m2.7:cloud}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - SHIM_PORT=8787
+      - SHIM_HOST=0.0.0.0
+      - SHIM_DEFAULT_CWD=/workspace
     command: >
       sh -c "npm install -g opencode-ai@latest 2>&1 | tail -3 &&
-             echo '✓ OpenCode ready — docker exec -it sa-opencode opencode' &&
-             tail -f /dev/null"
+             echo '✓ OpenCode ready — shim on :8787 (internal), CLI via docker exec' &&
+             exec node /opt/shim.mjs"
     depends_on:
       ollama:
         condition: service_healthy
@@ -103,25 +110,32 @@ services:
     ports:
       - "18789:18789"
     volumes:
-      - openclaw_workspace:/root/.openclaw/workspace
+      # Persist OpenClaw state (gateway token, registered agents, session DB)
+      - openclaw_state:/root/.openclaw
+      # Soul docs / prompts for OpenClaw agents
       - ./openclaw/SOUL.md:/root/.openclaw/workspace/SOUL.md:ro
       - ./openclaw/AGENTS.md:/root/.openclaw/workspace/AGENTS.md:ro
       - ./openclaw/HEARTBEAT.md:/root/.openclaw/workspace/HEARTBEAT.md:ro
       - ./openclaw/MEMORY.md:/root/.openclaw/workspace/MEMORY.md
       - ./config/openclaw-config.yaml:/root/.openclaw/config.yaml:ro
+      # Shared workspace so OpenClaw's coding-agent skill can invoke `opencode run`
+      # on the same files the orchestrator sees.
+      - workspace:/workspace
+      # Give the locally-installed opencode the same provider config
+      - ./config/opencode-config.json:/root/.config/opencode/config.json:ro
+      # First-boot bootstrap script (installs CLIs + runs `ollama launch openclaw`)
+      - ./openclaw/bootstrap.sh:/usr/local/bin/openclaw-bootstrap.sh:ro
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
-      - ACTIVE_MODEL=${ACTIVE_MODEL:-glm-5.1:cloud}
+      - OPENCODE_MODEL=${ACTIVE_MODEL:-minimax-m2.7:cloud}
+      - ACTIVE_MODEL=${ACTIVE_MODEL:-minimax-m2.7:cloud}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
       - NODE_ENV=production
-    command: >
-      sh -c "npm install -g openclaw@latest 2>&1 | tail -3 &&
-             echo '✓ OpenClaw gateway on :18789' &&
-             openclaw gateway --port 18789"
+    command: ["sh", "/usr/local/bin/openclaw-bootstrap.sh"]
     depends_on:
       ollama:
         condition: service_healthy
@@ -145,15 +159,16 @@ services:
       - ./config/mem0-config.yaml:/app/mem0-config.yaml:ro
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
-      - ACTIVE_MODEL=${ACTIVE_MODEL:-glm-5.1:cloud}
+      - ACTIVE_MODEL=${ACTIVE_MODEL:-minimax-m2.7:cloud}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - MODEL_MODE=${MODEL_MODE:-cloud}
       - QDRANT_HOST=http://qdrant:6333
+      # Bridge to OpenCode container so the coding crew can do real file ops
+      - OPENCODE_SHIM_URL=http://opencode:8787
     depends_on:
-      ollama:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
+      - ollama
+      - qdrant
+      - opencode
     networks: [agent-net]
 
   # ── 6. QDRANT — vector store for cross-session memory (Mem0 backend) ──────
@@ -168,12 +183,6 @@ services:
       - "6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:6333/readyz > /dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     networks: [agent-net]
 
   # ── 7. N8N — visual workflow / no-code glue ───────────────────────────────
@@ -215,15 +224,23 @@ services:
       - webui_data:/app/backend/data
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
+      # Wire the orchestrator as an OpenAI-compatible endpoint so the Open-WebUI
+      # model picker shows Ollama models AND orchestrator-routed crews
+      # (orchestrator-auto / -planner / -research / -coding / -ops / -analysis).
+      - ENABLE_OPENAI_API=true
+      - OPENAI_API_BASE_URL=http://orchestrator:8000/v1
+      - OPENAI_API_KEY=super-agent  # orchestrator ignores the key
       - WEBUI_AUTH=false           # set to true if exposing beyond localhost
     depends_on:
       ollama:
         condition: service_healthy
+      orchestrator:
+        condition: service_started
     networks: [agent-net]
 
 volumes:
   ollama_data:
-  openclaw_workspace:
+  openclaw_state:
   qdrant_data:
   n8n_data:
   webui_data:

@@ -3,7 +3,9 @@
 ## Routing rules
 
 **Single-step tasks:**
-- Code / script / debug → spawn an OpenCode ACP session
+- Code / script / debug → hand off to the local `coder` agent (its coding-agent
+  skill spawns `opencode run` in `/workspace`). Equivalent orchestrator route:
+  POST `/run` with `crew=coding` (uses the HTTP shim).
 - Research / explain / compare → POST `/run` with `crew=research`
 - Deploy / automate / schedule → POST `/run` with `crew=ops`
 - Data / metrics / KPIs → POST `/run` with `crew=analysis`

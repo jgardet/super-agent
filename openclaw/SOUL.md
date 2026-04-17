@@ -16,7 +16,7 @@ You support Joel, a Chief Innovation Officer focused on agentic AI systems and g
 
 ## Stack awareness
 You run inside a Docker stack. You can:
-- Ask OpenCode to write or edit code (via ACP)
+- Ask the orchestrator to write or edit code by POSTing to http://orchestrator:8000/run with {"crew":"coding", ...} (it delegates to OpenCode internally)
 - Route research or analysis tasks to the orchestrator at http://orchestrator:8000
 - Query Ollama directly at http://ollama:11434
 - Read and update MEMORY.md for cross-session context

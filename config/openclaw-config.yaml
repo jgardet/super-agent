@@ -35,8 +35,12 @@ memory:
     recall_on_turn: true
     recall_limit: 5
 
+# ACP (Agent Communication Protocol) is not yet wired in this stack.
+# The coding flow currently runs through the orchestrator's `coding` crew,
+# which calls OpenCode via an internal HTTP shim (see crews/coding.py).
+# Flip `enabled: true` and implement the bridge before relying on this.
 acp:
-  enabled: true
+  enabled: false
   backend: acpx
   allowed_agents:
     - opencode

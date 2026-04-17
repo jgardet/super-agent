@@ -1,9 +1,9 @@
-# switch-model.ps1 - toggle between GLM-5.1:cloud and local RTX 4080 inference
+# switch-model.ps1 - toggle between Ollama-cloud and local GPU inference
 #
 # Usage:
 #   .\scripts\switch-model.ps1                      -> show current config
-#   .\scripts\switch-model.ps1 cloud                -> GLM-5.1:cloud (default)
-#   .\scripts\switch-model.ps1 local                -> glm-4.7-flash (RTX 4080)
+#   .\scripts\switch-model.ps1 cloud                -> minimax-m2.7:cloud (default)
+#   .\scripts\switch-model.ps1 local                -> LOCAL_MODEL from .env
 #   .\scripts\switch-model.ps1 local qwen3.5:9b     -> local with override model
 
 $ErrorActionPreference = "Stop"
@@ -44,10 +44,10 @@ Write-Output "-------------------------"
 
 # Cloud mode
 if ($Mode -eq "cloud") {
-    $ActiveModel = "glm-5.1:cloud"
+    $ActiveModel = if ([string]::IsNullOrEmpty($OverrideModel)) { "minimax-m2.7:cloud" } else { $OverrideModel }
     Write-Output "  Mode:  cloud"
     Write-ColorOutput Green "  Model: $ActiveModel"
-    Write-ColorOutput Green "  VRAM:  0 GB (proxied by Ollama -> Z.ai)"
+    Write-ColorOutput Green "  VRAM:  0 GB (proxied via Ollama cloud)"
 
 # Local mode
 } elseif ($Mode -eq "local") {
@@ -68,31 +68,20 @@ if ($Mode -eq "cloud") {
         $LocalModel = $OverrideModel
     }
     $ActiveModel = $LocalModel
-    Write-Output "  Mode:  local (RTX 4080 12 GB)"
+    Write-Output "  Mode:  local (uses your GPU)"
     Write-ColorOutput Yellow "  Model: $LocalModel"
 
-    # VRAM guidance
+    # Approximate VRAM guidance - verify against your own GPU before pulling
     switch ($LocalModel) {
-        "glm-4.7-flash" {
-            Write-ColorOutput Green "  VRAM:  ~8 GB  (MoE 30B / 3B active) [OK] comfortable"
-        }
-        "qwen3-coder:14b" {
-            Write-ColorOutput Green "  VRAM:  ~9 GB  (14B dense)           [OK] fits"
-        }
-        "qwen3.5:9b" {
-            Write-ColorOutput Green "  VRAM:  ~6 GB  (9B dense)            [OK] headroom"
-        }
-        "qwen3.5:27b" {
-            Write-ColorOutput Red "  VRAM:  ~17 GB (27B dense)           [FAIL] exceeds 12 GB"
-            exit 1
-        }
+        "glm-4.7-flash"   { Write-ColorOutput Green "  VRAM:  ~8 GB  (MoE 30B / 3B active)" }
+        "qwen3-coder:14b" { Write-ColorOutput Green "  VRAM:  ~9 GB  (14B dense)" }
+        "qwen3.5:9b"      { Write-ColorOutput Green "  VRAM:  ~6 GB  (9B dense)" }
+        "qwen3.5:27b"     { Write-ColorOutput Yellow "  VRAM:  ~17 GB (27B dense) - needs a large GPU" }
         { $_ -match "glm-5.1" } {
-            Write-ColorOutput Red "  VRAM:  ~400+ GB (754B MoE)        [FAIL] not runnable locally"
+            Write-ColorOutput Red "  VRAM:  ~400+ GB (754B MoE) - not runnable locally"
             exit 1
         }
-        default {
-            Write-ColorOutput Yellow "  VRAM:  unknown - check ollama.com/library/$LocalModel"
-        }
+        default { Write-ColorOutput Yellow "  VRAM:  unknown - check ollama.com/library/$LocalModel" }
     }
 
     # Pull model if not already present
